@@ -19,12 +19,25 @@
 
 #include <Arduino.h>
 #include "distance_sensor.h"
+#include "tiltsensor.h"
+#include "servo_motor.h"
 
-DistanceSensor dist_sensor(5, 18);
+DistanceSensor dist_sensor(5, 7);
+
+#define SDA_PIN 47
+#define SCL_PIN 20
+
+servo_motor servo1(12);
+servo_motor servo2(13);
+
+uint32_t last_time  = 0;
 
 void setup()
 {
     dist_sensor.begin();
+
+    servo1.begin();
+    servo2.begin();
 
     Serial.begin(115200);
 
@@ -37,27 +50,49 @@ void setup()
         while (true)
             delay(100);
     }
+
+    // servo1.set_angle(90);
+    // servo2.set_angle(90);
+
+    servo1.set_angle(0);
+    servo2.set_angle(0);
+
+    delay(20000);
+
+    dist_sensor.send_signal();
 }
 
 void loop()
 {
-    dist_sensor.send_signal();
 
-    while (!dist_sensor.is_ready())
-        delay(10);
+    if (millis() - last_time > 1000) {
+        dist_sensor.send_signal();
+        last_time = millis();
+    }
 
-    uint16_t distance = dist_sensor.get_distance();
-    Serial.printf("Distance: %d", distance);
+    if (dist_sensor.is_ready()) {
+        uint16_t distance = dist_sensor.get_distance();
+        Serial.printf("Distance: %d \n", distance);
+    }
 
-    /// tilt sensor
-    tiltUpdate();
+    for (int i = -60; i <= 60; i++) {
+        servo1.set_angle(i);
+        servo2.set_angle(-i);
+        delay(50);
+    }
 
-    TiltData data = tiltGetData();
-    if (!data.valid)
-        return;
+    for (int i = -60; i <= 60; i++) {
+        servo1.set_angle(90 - i);
+        servo2.set_angle(-(90 - i));
+        delay(50);
+    }
+    
+    // tiltUpdate();
+    // TiltData data = tiltGetData();
+    // if (!data.valid) return;
 
-    Serial.print("Angle: ");
-    Serial.print(data.angle, 2);
-    Serial.print(" °\t\tmu = ");
-    Serial.println(data.mu, 4);
+    // Serial.print("Angle: ");
+    // Serial.print(data.angle, 2);
+    // Serial.print(" °\t\tmu = ");
+    // Serial.println(data.mu, 4);
 }
