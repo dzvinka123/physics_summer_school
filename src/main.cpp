@@ -1,98 +1,223 @@
-// #include <Arduino.h>
-
-// // put function declarations here:
-// int myFunction(int, int);
-
-// void setup() {
-//   // put your setup code here, to run once:
-//   int result = myFunction(2, 3);
-// }
-
-// void loop() {
-//   // put your main code here, to run repeatedly:
-// }
-
-// // put function definitions here:
-// int myFunction(int x, int y) {
-//   return x + y;
-// }
-
 #include <Arduino.h>
+#include <math.h>
 #include "distance_sensor.h"
-#include "tiltsensor.h"
 #include "servo_motor.h"
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define BUTTON_PIN 4
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 DistanceSensor dist_sensor(5, 7);
-
-#define SDA_PIN 47
-#define SCL_PIN 20
-
 servo_motor servo1(12);
 servo_motor servo2(13);
 
-uint32_t last_time  = 0;
+int currentAngle = 0;
+bool isScanning = false;
+bool lastButtonState = LOW;
+bool scanDone = false;
+float lastTangent = NAN;
+bool hasTangent = false;
+
+void displayTangent(float tangent) {
+    display.clearDisplay();
+
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("Object detected!");
+
+    display.setTextSize(1);
+    display.setCursor(0, 20);
+    display.print("Angle: ");
+    display.print(currentAngle);
+    display.println(" deg");
+
+    display.setCursor(0, 35);
+    display.print("Tangent:");
+
+    display.setTextSize(2);
+    display.setCursor(0, 48);
+    display.print(tangent, 4);
+
+    display.display();
+}
+
+void displayScanning() {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("Scanning...");
+    display.setCursor(0, 20);
+    display.print("Angle: ");
+    display.print(currentAngle);
+    display.println(" deg");
+    display.display();
+}
+
+void displayIdle() {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    display.setCursor(0, 0);
+    display.println("Press button");
+    display.setCursor(0, 15);
+    display.println("to start scan");
+
+    if (hasTangent) {
+        display.setCursor(0, 35);
+        display.println("Last tangent:");
+        display.setTextSize(2);
+        display.setCursor(0, 48);
+        display.print(lastTangent, 4);
+    }
+
+    display.display();
+}
 
 void setup()
 {
     dist_sensor.begin();
-
     servo1.begin();
     servo2.begin();
 
+    pinMode(5, OUTPUT);
+    pinMode(7, INPUT);
+    pinMode(BUTTON_PIN, INPUT);
+
     Serial.begin(115200);
 
-    delay(2000);
-    Serial.println("=== ESP32-S3 + GY-521 ===");
-
-    if (!tiltBegin(SDA_PIN, SCL_PIN, TILT_AXIS_Y))
-    {
-        Serial.println("Checking connection!");
-        while (true)
-            delay(100);
+    Wire.begin(3, 18); 
+    if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+        Serial.println("SSD1306 not found!");
+        while (true);
     }
+    display.clearDisplay();
+    display.display();
 
-    // servo1.set_angle(90);
-    // servo2.set_angle(90);
+    delay(2000);
+    Serial.println("=== ESP32-S3 Servo Scanner with Button ===");
+    Serial.println("Press button to Start / Stop");
 
     servo1.set_angle(0);
     servo2.set_angle(0);
 
-    delay(20000);
+    displayIdle();
+}
 
-    dist_sensor.send_signal();
+void checkButton() {
+    bool currentButtonState = digitalRead(BUTTON_PIN);
+
+    if (currentButtonState == HIGH && lastButtonState == LOW) {
+        delay(50);
+
+        if (digitalRead(BUTTON_PIN) == HIGH) {
+            if (!isScanning && scanDone) {
+                scanDone = false;
+                isScanning = true;
+                currentAngle = 0;
+                Serial.println(">>> SCANNING STARTED <<<");
+                displayScanning();
+            } else if (!isScanning && !scanDone) {
+                isScanning = true;
+                currentAngle = 0;
+                Serial.println(">>> SCANNING STARTED <<<");
+                displayScanning();
+            } else if (isScanning) {
+                isScanning = false;
+                scanDone = false;
+                Serial.println(">>> SCANNING STOPPED <<<");
+                for (int i = currentAngle; i >= 0; i--) {
+                    servo1.tick_right();
+                    servo2.tick_left();
+                    delay(200);
+                }
+                displayIdle();
+            }
+        }
+    }
+    lastButtonState = currentButtonState;
 }
 
 void loop()
 {
+    checkButton();
 
-    if (millis() - last_time > 1000) {
-        dist_sensor.send_signal();
-        last_time = millis();
+    if (isScanning && !scanDone) {
+
+        for (int i = 0; i >= -80; i--) {
+            checkButton();
+            if (!isScanning) return;
+
+            servo1.tick_left();
+            servo2.tick_right();
+            currentAngle = map(abs(i), 0, 80, 0, 60);
+
+            displayScanning();
+
+            delay(500);
+
+            long totalDuration = 0;
+            int measurements = 5;
+            for (int m = 0; m < measurements; m++) {
+                digitalWrite(5, LOW);
+                delayMicroseconds(2);
+                digitalWrite(5, HIGH);
+                delayMicroseconds(10);
+                digitalWrite(5, LOW);
+
+                long duration = pulseIn(7, HIGH, 30000);
+                totalDuration += duration;
+                delayMicroseconds(100);
+            }
+
+            long avgDuration = totalDuration / measurements;
+            uint16_t distance = avgDuration / 58;
+
+            Serial.print("Angle: ");
+            Serial.print(currentAngle);
+            Serial.print(" degrees, Distance: ");
+            Serial.print(distance);
+            Serial.print(" cm");
+
+            if (distance <= 10 && distance > 0) {
+                float radians = currentAngle * (M_PI / 180.0);
+                float tangent = tan(radians);
+
+                Serial.print(" | Tangent: ");
+                Serial.println(tangent, 4);
+
+                lastTangent = tangent;
+                hasTangent = true;
+                displayTangent(tangent);
+
+                break;
+            }
+            Serial.println();
+
+            delay(100);
+        }
+
+        delay(500);
+        for (int i = currentAngle; i >= 0; i--) {
+            checkButton();
+            if (!isScanning) return;
+
+            servo1.tick_right();
+            servo2.tick_left();
+            delay(100);
+        }
+
+        isScanning = false;
+        scanDone = true;
+        Serial.println(">>> SCAN COMPLETED. Press button to scan again... <<<");
+
+        displayIdle();
     }
-
-    if (dist_sensor.is_ready()) {
-        uint16_t distance = dist_sensor.get_distance();
-        Serial.printf("Distance: %d \n", distance);
-    }
-
-    for (int i = -60; i <= 60; i++) {
-        servo1.set_angle(i);
-        servo2.set_angle(-i);
-        delay(50);
-    }
-
-    for (int i = -60; i <= 60; i++) {
-        servo1.set_angle(90 - i);
-        servo2.set_angle(-(90 - i));
-        delay(50);
-    }
-    
-    // tiltUpdate();
-    // TiltData data = tiltGetData();
-    // if (!data.valid) return;
-
-    // Serial.print("Angle: ");
-    // Serial.print(data.angle, 2);
-    // Serial.print(" °\t\tmu = ");
-    // Serial.println(data.mu, 4);
 }
